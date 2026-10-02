@@ -2,15 +2,23 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	nethttp "net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	partyhttp "Parties/internal/party/handler/http"
 	"Parties/internal/party/repository"
-	partyservice "Parties/internal/party/service"
+	"Parties/internal/party/service"
 	"Parties/internal/shared/config"
 	"Parties/internal/shared/database"
 	"Parties/internal/shared/logger"
 	"Parties/internal/shared/migration"
+
+	"github.com/go-chi/chi/v5"
 )
 
 func main() {
@@ -21,24 +29,56 @@ func main() {
 	}
 
 	log := logger.New(cfg.LogLevel)
-	ctx := context.Background()
+	if err := run(cfg, log); err != nil {
+		log.Error("run server", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run(cfg config.Config, log *slog.Logger) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	if cfg.RunMigrations {
 		if err := migration.Run(cfg.DatabaseURL, log); err != nil {
-			log.Error("run migrations", "error", err)
-			os.Exit(1)
+			return err
 		}
 	}
 
 	pool, err := database.NewPostgresPool(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Error("connect postgres", "error", err)
-		os.Exit(1)
+		return err
 	}
 	defer pool.Close()
 
-	partyRepository := repository.New(pool)
-	_ = partyservice.New(partyRepository)
+	repo := repository.New(pool)
+	partyService := service.New(repo, log)
+	handler := partyhttp.New(partyService)
 
-	log.Info("party service initialized", "http_addr", cfg.HTTPAddr)
+	r := chi.NewRouter()
+	handler.RegisterRoutes(r)
+
+	server := &nethttp.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           r,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Info("http server started", "addr", cfg.HTTPAddr)
+		errCh <- server.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return server.Shutdown(shutdownCtx)
+	case err := <-errCh:
+		if errors.Is(err, nethttp.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
 }

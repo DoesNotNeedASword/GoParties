@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 
 	"Parties/internal/party/model"
@@ -20,10 +21,16 @@ type Repository interface {
 
 type Service struct {
 	repository Repository
+	logger     *slog.Logger
 }
 
-func New(repository Repository) *Service {
-	return &Service{repository: repository}
+func New(repository Repository, logs ...*slog.Logger) *Service {
+	var log *slog.Logger
+	if len(logs) > 0 {
+		log = logs[0]
+	}
+
+	return &Service{repository: repository, logger: log}
 }
 
 func (s *Service) Create(ctx context.Context, input model.CreatePartyInput) (model.Party, error) {

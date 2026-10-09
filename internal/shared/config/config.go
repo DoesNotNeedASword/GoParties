@@ -12,6 +12,7 @@ import (
 
 type Config struct {
 	HTTPAddr      string
+	GRPCAddr      string
 	DatabaseURL   string
 	RunMigrations bool
 	LogLevel      string
@@ -43,6 +44,7 @@ func LoadFile(path string) (Config, error) {
 	}
 
 	cfg := Config{
+		GRPCAddr:      envString(values, "GRPC_ADDR", ":50052"),
 		HTTPAddr:      envString(values, "HTTP_ADDR", ":8080"),
 		DatabaseURL:   envString(values, "DATABASE_URL", ""),
 		RunMigrations: runMigrations,

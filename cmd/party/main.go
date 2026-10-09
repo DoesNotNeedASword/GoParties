@@ -1,15 +1,7 @@
 package main
 
 import (
-	"context"
-	"errors"
-	"log/slog"
-	nethttp "net/http"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
-
+	partygrpc "Parties/internal/party/handler/grpc"
 	partyhttp "Parties/internal/party/handler/http"
 	"Parties/internal/party/repository"
 	"Parties/internal/party/service"
@@ -17,8 +9,19 @@ import (
 	"Parties/internal/shared/database"
 	"Parties/internal/shared/logger"
 	"Parties/internal/shared/migration"
+	"context"
+	"errors"
+	"log/slog"
+	"net"
+	nethttp "net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	partyv1 "github.com/DoesNotNeedASword/proto-contracts/gen/go/party/v1"
 	"github.com/go-chi/chi/v5"
+	"google.golang.org/grpc"
 )
 
 func main() {
@@ -55,6 +58,14 @@ func run(cfg config.Config, log *slog.Logger) error {
 	partyService := service.New(repo, log)
 	handler := partyhttp.New(partyService)
 
+	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
+	if err != nil {
+		return err
+	}
+	grpcServer := grpc.NewServer()
+	partyHandler := partygrpc.New(partyService)
+	partyv1.RegisterPartyServiceServer(grpcServer, partyHandler)
+
 	r := chi.NewRouter()
 	handler.RegisterRoutes(r)
 
@@ -69,11 +80,16 @@ func run(cfg config.Config, log *slog.Logger) error {
 		log.Info("http server started", "addr", cfg.HTTPAddr)
 		errCh <- server.ListenAndServe()
 	}()
+	go func() {
+		log.Info("grpc server started", "addr", cfg.GRPCAddr)
+		errCh <- grpcServer.Serve(grpcLis)
+	}()
 
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		grpcServer.GracefulStop()
 		return server.Shutdown(shutdownCtx)
 	case err := <-errCh:
 		if errors.Is(err, nethttp.ErrServerClosed) {
